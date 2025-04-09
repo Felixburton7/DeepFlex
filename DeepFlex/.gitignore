@@ -1,0 +1,27 @@
+# Ignore model outputs and generated configs
+# models/
+output/
+/models/
+
+
+# Specific generated or temporary files
+# outputAI_context.sh
+# default_config.yaml
+# maxed_config.yaml
+# FlexSeq_context.txt
+
+# Python cache & egg-info
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+.env/
+
+# OS files
+.DS_Store
+Thumbs.db

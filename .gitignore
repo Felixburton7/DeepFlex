@@ -1,0 +1,54 @@
+# General Python cache and compiled files
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Environments
+.env
+.env_*/
+
+# Data files
+*/data/
+*.csv
+*.parquet
+*.hdf5
+*.npy
+*.pkl
+*.pt
+
+# Model outputs and checkpoints
+*/models/
+*/checkpoints/
+*/outputs/
+*/predictions/
+*.log
+# *.json
+
+# Visualization and images
+*.png
+
+# Large text or pickle files
+*.txt
+*.pickle
+
+# YAML and configuration backups
+# *.yaml
+
+# Exclude specific large directories
+DeepFlex/output/
+DeepFlex/models/
+ESM-Flex/models/
+ESM-Flex/predictions/
+VoxelFlex/outputs/
+VoxelFlex_Multi/outputs/
+VoxelFlex_Multi/input_data/
+
+# IDE files
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Local test data
+*/test/test_data/

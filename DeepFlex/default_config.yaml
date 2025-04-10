@@ -16,9 +16,7 @@ mode:
 
 # Temperature configuration (Simplified)
 temperature:
-  # current: 320                  # REMOVED - No longer needed for single model
   available: [320, 348, 379, 413, 450] # INFORMATIONAL ONLY - List of temps in original data
-                                     # (Excludes "average" if not handled numerically)
   comparison:                     # PURPOSE REDEFINED - Analyze single model's sensitivity to temp feature
     enabled: true                 # Analyze sensitivity to input temperature
     # Metrics can be calculated on test set binned by the 'temperature' column
@@ -27,7 +25,7 @@ temperature:
 # Dataset configuration (Updated for aggregated data)
 dataset:
   # Data loading
-  file_pattern: "aggregated_dataset.csv" # UPDATED - Points to single aggregated file
+  file_pattern: "aggregated_train_dataset.csv" # Points to single aggregated file
 
   # Domain filtering (Remains the same)
   domains:
@@ -45,32 +43,34 @@ dataset:
       - resname                   # Residue name
       - rmsf                      # UPDATED - Unified target variable
       - temperature               # ADDED - Temperature feature
+      - bfactor_norm
 
     # Input features with toggles - ADD 'temperature'
     use_features:
-      protein_size: false          # Size of protein
+      protein_size: true          # Size of protein
       normalized_resid: true      # Position in sequence
       relative_accessibility: true # Solvent accessibility (Example: disabled)
       core_exterior_encoded: true # Core or exterior (Example: disabled)
       secondary_structure_encoded: true # Secondary structure (Example: disabled)
-      phi_norm: false              # Normalized phi angle (Example: disabled)
-      psi_norm: false              # Normalized psi angle (Example: disabled)
+      phi_norm: true              # Normalized phi angle (Example: disabled)
+      psi_norm: true              # Normalized psi angle (Example: disabled)
       resname_encoded: true       # Encoded residue name
       temperature: true           # ADDED & ENABLED - Include temperature as feature
       esm_rmsf: true              # ESM embeddings prediction (OmniFlex only)
       voxel_rmsf: true            # 3D voxel prediction (OmniFlex only)
+      bfactor_norm: true
 
     # Enhanced feature engineering (Remains the same conceptually)
     window:
-      enabled: true               # Use window-based features
-      size: 1                    # Increased window size for better context
+      enabled: false               # Use window-based features
+      size: 3                    # Increased window size for better context
 
   # Target variable (Updated)
   target: rmsf                    # UPDATED - Unified target column name
 
   # Data splitting (Remains the same conceptually)
   split:
-    test_size: 0.1                # Test set size
+    test_size: 0.05                # Test set size
     validation_size: 0.1         # Validation set size
     stratify_by_domain: true      # Keep domains together (RECOMMENDED)
     random_state: 42              # Random seed
@@ -86,7 +86,7 @@ evaluation:
     spearman_correlation: true    # Spearman rank correlation
     root_mean_square_absolute_error: true  # Root Mean Square Absolute Error
 
-# Model configurations (Remains the same conceptually)
+# Model configurations 
 models:
   # Shared settings
   common:
@@ -105,7 +105,7 @@ models:
     training:
       optimizer: adam             # Optimizer
       learning_rate: 0.001        # Learning rate
-      batch_size: 64              # Increased batch size
+      batch_size: 256              # Increased batch size
       epochs: 3                  # Increased max epochs
       early_stopping: true        # Use early stopping
       patience: 5                 # Increased patience
@@ -126,26 +126,31 @@ models:
         dropout: [0.1, 0.2, 0.3, 0.4, 0.5]
         activation: ["relu", "leaky_relu", "tanh"]
 
-  # Random Forest - enhanced model
   random_forest:
-    enabled: true                 # Run this model
-    n_estimators: 500             # Increased number of trees
-    max_depth: null               # Max tree depth
-    min_samples_split: 2          # Min samples to split
-    min_samples_leaf: 1           # Min samples in leaf
-    max_features: 0.7             # Feature fraction
-    bootstrap: true               # Use bootstrapping
+    enabled: true
+    # Core parameters (These are less important when HPO is enabled,
+    # as HPO finds the best ones, but good to have reasonable defaults)
+    n_estimators: 150              # Default if HPO disabled
+    max_depth: 25                  # Default if HPO disabled
+    min_samples_split: 10
+    min_samples_leaf: 5
+    max_features: 'sqrt'
+    bootstrap: true
+    verbose: 1                     # Shows progress within each fit
+    n_jobs: -12                     # USE ALL CORES - Standard practice
+
+    # HPO configuration - Faster search
     randomized_search:
-      enabled: false              # Enable RandomizedSearchCV
-      n_iter: 1                   # More parameter combinations to try
-      cv: 1                       # Increased cross-validation folds
-      param_distributions:        # Enhanced parameter distributions to search
-        n_estimators: [100, 200, 300, 500, 800]
-        max_depth: [null, 15, 30, 50, 100]
-        min_samples_split: [2, 3, 5, 8, 10]
-        min_samples_leaf: [1, 2, 3, 4, 5]
-        max_features: ["auto", "sqrt", "log2", 0.5, 0.7, 0.9]
-        bootstrap: [true, false]
+      enabled: true
+      n_iter: 8                   
+      cv: 2                        # Keep 2 folds for speed
+      param_distributions:
+        n_estimators: [50, 150, 250]   
+        max_depth: [10, 15, 20]        
+        min_samples_split: [10, 20]    # Focus on simpler trees
+        min_samples_leaf: [5, 10]      # Focus on simpler trees
+        max_features: ['sqrt', 0.4]    # Simpler search, includes 'sqrt'
+
 
   #LightGBM
   lightgbm:

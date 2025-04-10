@@ -428,6 +428,7 @@ class Pipeline:
     ) -> Dict[str, Dict[str, float]]:
         """
         Evaluate the single trained model on the test split of the aggregated data.
+        Includes enhanced logging for feature mismatch debugging.
 
         Args:
             model_names: List containing the single model name to evaluate.
@@ -482,10 +483,13 @@ class Pipeline:
         logger.info(f"Preparing {comparison_set_name} features for evaluation...")
         try:
             with ProgressCallback(total=1, desc="Preparing features") as pbar:
-                X_eval, y_eval, feature_names = prepare_data_for_model(eval_df, self.config, include_target=True)
+                # This is where feature names for evaluation are generated
+                X_eval, y_eval, feature_names_eval = prepare_data_for_model(eval_df, self.config, include_target=True)
                 pbar.update()
             if X_eval.size == 0 or y_eval.size == 0:
                 raise ValueError("Evaluation data (X or y) is empty after preparation.")
+            logger.debug(f"Features prepared for EVALUATION ({len(feature_names_eval)}): {feature_names_eval}") # Log prepared features
+
         except Exception as e:
              logger.error(f"Feature preparation failed for evaluation: {e}", exc_info=True)
              return {}
@@ -503,6 +507,40 @@ class Pipeline:
                 self.models[model_name_to_eval] = model # Cache loaded model
                 pbar.update()
 
+            # --- START: Feature Consistency Check ---
+            if hasattr(model, 'feature_names_') and model.feature_names_:
+                expected_features = model.feature_names_
+                logger.debug(f"Model '{model_name_to_eval}' expects features ({len(expected_features)}): {expected_features}")
+
+                if feature_names_eval != expected_features:
+                    logger.error(f"FATAL: Feature mismatch detected for model '{model_name_to_eval}'!")
+                    logger.error(f"  Data has {len(feature_names_eval)} features: {feature_names_eval}")
+                    logger.error(f"  Model expects {len(expected_features)} features: {expected_features}")
+
+                    # Detailed comparison (optional, can be verbose)
+                    set_eval = set(feature_names_eval)
+                    set_expected = set(expected_features)
+                    missing_in_eval = set_expected - set_eval
+                    extra_in_eval = set_eval - set_expected
+                    if missing_in_eval:
+                        logger.error(f"  Features MISSING in evaluation data: {sorted(list(missing_in_eval))}")
+                    if extra_in_eval:
+                        logger.error(f"  Features EXTRA in evaluation data: {sorted(list(extra_in_eval))}")
+                    if len(feature_names_eval) == len(expected_features) and feature_names_eval != expected_features:
+                         logger.error("  Feature ORDER differs.")
+
+                    # Option 1: Raise an error to stop execution
+                    raise ValueError(f"Feature mismatch for model '{model_name_to_eval}'. Cannot proceed.")
+                    # Option 2: Return empty results (current behavior if error is caught below)
+                    # return {}
+                else:
+                     logger.info(f"Feature consistency check passed for model '{model_name_to_eval}'.")
+
+            else:
+                 logger.warning(f"Loaded model '{model_name_to_eval}' does not have 'feature_names_' attribute. Cannot perform consistency check.")
+            # --- END: Feature Consistency Check ---
+
+
             # Generate predictions
             logger.info("Generating predictions on evaluation set...")
             with ProgressCallback(total=1, desc=f"Predicting", leave=False) as pbar:
@@ -517,7 +555,7 @@ class Pipeline:
             # Calculate metrics
             logger.info("Calculating evaluation metrics...")
             with ProgressCallback(total=1, desc="Computing metrics", leave=False) as pbar:
-                n_features = X_eval.shape[1]
+                n_features = X_eval.shape[1] # Use actual shape of X_eval
                 metrics = evaluate_predictions(y_eval, preds, self.config, X=X_eval, n_features=n_features)
                 pbar.update()
 
@@ -526,6 +564,9 @@ class Pipeline:
 
         except FileNotFoundError as e:
              logger.error(f"Could not load model '{model_name_to_eval}' for evaluation: {e}")
+             return {}
+        except ValueError as ve: # Catch the explicit ValueError from the feature check
+             logger.error(f"Evaluation aborted due to error: {ve}")
              return {}
         except Exception as e:
             logger.error(f"Error during evaluation process for {model_name_to_eval}: {e}", exc_info=True)
@@ -994,204 +1035,7 @@ class Pipeline:
 
         logger.info(f"Prediction completed successfully. Generated {len(result_df_final)} predictions.")
         return result_df_final, metrics
-    # def predict(
-    #     self,
-    #     data: Union[str, pd.DataFrame],
-    #     temperature: float, # REQUIRED prediction temperature
-    #     model_name: Optional[str] = None,
-    #     with_uncertainty: bool = False
-    # ) -> Tuple[pd.DataFrame, Optional[Dict[str, float]]]: # Return metrics dict too
-    #     """
-    #     Generate predictions for new data at a specific prediction temperature.
 
-    #     If the input data contains the true target ('rmsf') and original
-    #     'temperature' columns, calculate and return evaluation metrics comparing
-    #     predictions ONLY for rows where original temperature matches the
-    #     specified prediction temperature.
-
-    #     Args:
-    #         data: DataFrame or path to CSV file with protein data features.
-    #               May optionally contain 'rmsf' and 'temperature' columns.
-    #         temperature: The target temperature (K) for which to predict.
-    #         model_name: Specific model to use (if None, finds best/first enabled).
-    #         with_uncertainty: Whether to include uncertainty estimates.
-
-    #     Returns:
-    #         Tuple containing:
-    #         - DataFrame with identifiers, prediction temp, prediction, original temp (if present),
-    #           true target (if present), errors (if present), uncertainty (if requested).
-    #           Contains ALL rows from input.
-    #         - Dictionary of evaluation metrics calculated ONLY on the subset where
-    #           original input temperature == prediction temperature (if possible), else None.
-    #     """
-    #     logger.info(f"Starting prediction for prediction_temperature: {temperature} K")
-    #     target_col_name = self.config["dataset"]["target"] # 'rmsf'
-    #     original_temp_col_name = 'temperature' # Standard name for original temp feature
-    #     pred_col_name = f"{target_col_name}_predicted"
-    #     unc_col_name = f"{target_col_name}_uncertainty"
-    #     error_col_name = f"{target_col_name}_error"
-    #     abs_error_col_name = f"{target_col_name}_abs_error"
-
-    #     # --- 1. Load and Process Input Data ---
-    #     input_df_contains_target = False
-    #     input_df_contains_orig_temp = False
-    #     input_df_raw: Optional[pd.DataFrame] = None
-
-    #     if isinstance(data, str):
-    #         logger.debug(f"Loading prediction input data from path: {data}")
-    #         try:
-    #              input_df_raw = load_file(data) # Load raw first
-    #              if target_col_name in input_df_raw.columns: input_df_contains_target = True
-    #              if original_temp_col_name in input_df_raw.columns: input_df_contains_orig_temp = True
-    #              logger.info(f"Input file contains target: {input_df_contains_target}, original temperature: {input_df_contains_orig_temp}.")
-    #              df_processed = load_and_process_data(input_df_raw, self.config)
-    #         except Exception as e:
-    #              logger.error(f"Error loading/processing input file {data}: {e}", exc_info=True)
-    #              raise ValueError(f"Failed to load/process input file {data}") from e
-    #     elif isinstance(data, pd.DataFrame):
-    #         logger.debug("Processing provided DataFrame for prediction...")
-    #         if target_col_name in data.columns: input_df_contains_target = True
-    #         if original_temp_col_name in data.columns: input_df_contains_orig_temp = True
-    #         logger.info(f"Input DataFrame contains target: {input_df_contains_target}, original temperature: {input_df_contains_orig_temp}.")
-    #         input_df_raw = data.copy()
-    #         df_processed = process_features(input_df_raw.copy(), self.config)
-    #     else:
-    #          raise TypeError("Input 'data' must be a file path (str) or a pandas DataFrame.")
-
-    #     if not isinstance(input_df_raw, pd.DataFrame):
-    #          logger.error("Failed to obtain a valid DataFrame from input.")
-    #          raise ValueError("Could not process input data into a DataFrame.")
-
-    #     # --- 2. Determine and Load Model (remains the same) ---
-    #     if model_name is None:
-    #         try: # Find best model logic...
-    #             results_path = os.path.join(self.output_dir, "evaluation_results.csv")
-    #             if os.path.exists(results_path):
-    #                 results_df = pd.read_csv(results_path, index_col="model")
-    #                 if not results_df.empty:
-    #                     if "r2" in results_df.columns and results_df["r2"].notna().any(): model_name = results_df["r2"].idxmax()
-    #                     elif "rmse" in results_df.columns and results_df["rmse"].notna().any(): model_name = results_df["rmse"].idxmin()
-    #                     else: model_name = results_df.index[0]
-    #                     logger.info(f"Using best model: '{model_name}'")
-    #                 else: raise ValueError("Eval file empty.")
-    #             else: raise FileNotFoundError
-    #         except (FileNotFoundError, IndexError, ValueError, Exception) as e:
-    #              logger.warning(f"Could not determine best model ({e}). Falling back.")
-    #              enabled_models = get_enabled_models(self.config);
-    #              if not enabled_models: raise RuntimeError("No model specified/enabled.")
-    #              model_name = enabled_models[0]; logger.info(f"Using first enabled: '{model_name}'")
-
-    #     logger.info(f"Loading model '{model_name}' for prediction.")
-    #     model = self.models.get(model_name) or self.load_model(model_name)
-    #     self.models[model_name] = model
-
-    #     # --- 3. Prepare Feature Matrix & Augment Temperature (remains the same) ---
-    #     logger.debug("Preparing feature matrix for prediction...")
-    #     X_input, _, feature_names = prepare_data_for_model(
-    #         df_processed, self.config, include_target=False
-    #     )
-    #     X_augmented = X_input
-    #     temp_feature_enabled = self.config['dataset']['features']['use_features'].get('temperature', False)
-    #     if temp_feature_enabled:
-    #         try:
-    #             temp_feature_index = feature_names.index(original_temp_col_name) # Use standard temp col name
-    #             logger.debug(f"Augmenting features: Setting '{original_temp_col_name}' col ({temp_feature_index}) to {temperature}.")
-    #             if not X_augmented.flags.writeable: X_augmented = X_augmented.copy()
-    #             X_augmented[:, temp_feature_index] = temperature
-    #         except ValueError:
-    #             logger.error(f"'{original_temp_col_name}' required but missing from prepared features!")
-    #             raise ValueError(f"Feature mismatch: '{original_temp_col_name}' missing.")
-    #     else: logger.warning("Predicting, but model not trained with temperature feature.")
-
-    #     # --- 4. Generate Predictions (remains the same) ---
-    #     logger.info(f"Generating predictions with model '{model_name}'...")
-    #     predictions_array: Optional[np.ndarray] = None
-    #     uncertainties_array: Optional[np.ndarray] = None
-    #     try:
-    #         if with_uncertainty and hasattr(model, 'predict_with_std') and callable(model.predict_with_std):
-    #             predictions_array, uncertainties_array = model.predict_with_std(X_augmented)
-    #             logger.info("Predictions with uncertainty generated.")
-    #         else:
-    #             if with_uncertainty: logger.warning(f"Uncertainty requested, but not supported.")
-    #             predictions_array = model.predict(X_augmented)
-    #             logger.info("Standard predictions generated.")
-    #     except Exception as e:
-    #          logger.error(f"Prediction generation failed: {e}", exc_info=True); raise
-
-    #     # --- 5. Construct Result DataFrame ---
-    #     logger.debug("Constructing result DataFrame...")
-    #     id_cols = ['domain_id', 'resid', 'resname']
-    #     cols_to_copy = id_cols[:]
-    #     if input_df_contains_orig_temp: cols_to_copy.append(original_temp_col_name)
-    #     if input_df_contains_target: cols_to_copy.append(target_col_name)
-
-    #     result_df_base = pd.DataFrame(index=range(len(predictions_array)))
-    #     if all(c in input_df_raw.columns for c in id_cols):
-    #          temp_ids_df = input_df_raw[id_cols].copy().reset_index(drop=True)
-    #          if len(temp_ids_df) == len(predictions_array):
-    #               result_df_base = temp_ids_df
-    #          else: logger.warning("ID length mismatch.")
-    #     else: logger.warning("Input missing IDs.")
-
-    #     # Add optional columns if they exist in raw input and length matches
-    #     for col in cols_to_copy:
-    #          if col not in id_cols and col in input_df_raw.columns and len(input_df_raw) == len(predictions_array):
-    #                result_df_base[col] = input_df_raw[col].values
-    #          elif col not in id_cols and col not in result_df_base.columns: # Add as NaN if missing entirely
-    #                result_df_base[col] = np.nan
-
-    #     # Add prediction temperature and predictions
-    #     result_df_base['prediction_temperature'] = temperature
-    #     result_df_base[pred_col_name] = predictions_array
-    #     if uncertainties_array is not None: result_df_base[unc_col_name] = uncertainties_array
-
-    #     # Calculate errors *if* target was present
-    #     if input_df_contains_target:
-    #          result_df_base[error_col_name] = result_df_base[pred_col_name] - result_df_base[target_col_name]
-    #          result_df_base[abs_error_col_name] = np.abs(result_df_base[error_col_name])
-
-    #     # --- Calculate Metrics ONLY on Matching Temperatures ---
-    #     metrics = None
-    #     if input_df_contains_target and input_df_contains_orig_temp:
-    #         logger.info(f"Calculating metrics comparing predictions @{temperature}K vs true values @{temperature}K...")
-    #         # Filter the results to rows where original temp == prediction temp
-    #         # Use np.isclose for robust float comparison
-    #         matching_temp_df = result_df_base[np.isclose(result_df_base[original_temp_col_name], temperature)]
-
-    #         if not matching_temp_df.empty:
-    #             # Drop NaNs from target and prediction within this subset
-    #             eval_subset = matching_temp_df[[target_col_name, pred_col_name]].dropna()
-    #             if not eval_subset.empty and len(eval_subset) > 1:
-    #                 y_true_eval = eval_subset[target_col_name].values
-    #                 y_pred_eval = eval_subset[pred_col_name].values
-    #                 # Need to prepare X subset for metrics requiring features (e.g., Adj R2)
-    #                 # This requires re-preparing features for the matching_temp_df indices
-    #                 # For simplicity now, we won't pass X to evaluate_predictions here
-    #                 # If Adj R2 is critical, this needs refinement
-    #                 n_feat_for_metrics = len(feature_names) # Number of features model was trained on
-    #                 metrics = evaluate_predictions(y_true_eval, y_pred_eval, self.config, n_features=n_feat_for_metrics)
-    #                 logger.info(f"Prediction Metrics (for T={temperature}K only): {metrics}")
-    #             else:
-    #                 logger.warning(f"Not enough valid data points found where original temperature == {temperature}K for metric calculation.")
-    #         else:
-    #              logger.warning(f"No rows found in input where original temperature == {temperature}K. Cannot calculate specific metrics.")
-    #     # --- End Metrics Calculation ---
-
-    #     # Reorder columns for clarity
-    #     final_cols_order = ['domain_id', 'resid', 'resname']
-    #     if original_temp_col_name in result_df_base.columns: final_cols_order.append(original_temp_col_name)
-    #     if target_col_name in result_df_base.columns: final_cols_order.append(target_col_name)
-    #     final_cols_order.append('prediction_temperature')
-    #     final_cols_order.append(pred_col_name)
-    #     if unc_col_name in result_df_base.columns: final_cols_order.append(unc_col_name)
-    #     if error_col_name in result_df_base.columns: final_cols_order.append(error_col_name)
-    #     if abs_error_col_name in result_df_base.columns: final_cols_order.append(abs_error_col_name)
-    #     final_cols_order = [col for col in final_cols_order if col in result_df_base.columns]
-    #     result_df_final = result_df_base[final_cols_order]
-
-    #     return result_df_final, metrics
-
-        # Place this corrected method inside the Pipeline class
     def analyze(
         self,
         model_name: Optional[str] = None,
